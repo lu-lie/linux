@@ -686,7 +686,8 @@ $(OUTPUT)/bench_%.o: benchs/bench_%.c bench.h $(BPFOBJ)
 $(OUTPUT)/bench_rename.o: $(OUTPUT)/test_overhead.skel.h
 $(OUTPUT)/bench_trigger.o: $(OUTPUT)/trigger_bench.skel.h
 $(OUTPUT)/bench_ringbufs.o: $(OUTPUT)/ringbuf_bench.skel.h \
-			    $(OUTPUT)/perfbuf_bench.skel.h
+			    $(OUTPUT)/perfbuf_bench.skel.h \
+			    $(OUTPUT)/relaymap_bench.skel.h
 $(OUTPUT)/bench_bloom_filter_map.o: $(OUTPUT)/bloom_filter_bench.skel.h
 $(OUTPUT)/bench_bpf_loop.o: $(OUTPUT)/bpf_loop_bench.skel.h
 $(OUTPUT)/bench_strncmp.o: $(OUTPUT)/strncmp_bench.skel.h

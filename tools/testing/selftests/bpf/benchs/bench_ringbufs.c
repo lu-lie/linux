@@ -10,6 +10,7 @@
 #include "bench.h"
 #include "ringbuf_bench.skel.h"
 #include "perfbuf_bench.skel.h"
+#include "relaymap_bench.skel.h"
 
 static struct {
 	bool back2back;
@@ -19,6 +20,7 @@ static struct {
 	int ringbuf_sz; /* per-ringbuf, in bytes */
 	bool ringbuf_use_output; /* use slower output API */
 	int perfbuf_sz; /* per-CPU size, in pages */
+	int relaymap_subbuf_sz; /* per-CPU subbuf size, in bytes */
 } args = {
 	.back2back = false,
 	.batch_cnt = 500,
@@ -27,6 +29,7 @@ static struct {
 	.ringbuf_sz = 512 * 1024,
 	.ringbuf_use_output = false,
 	.perfbuf_sz = 128,
+	.relaymap_subbuf_sz = 64 * 1024,
 };
 
 enum {
@@ -516,6 +519,116 @@ static void *perfbuf_custom_consumer(void *input)
 	return NULL;
 }
 
+/* RELAYMAP benchmark */
+static struct relaymap_ctx {
+	struct relaymap_bench *skel;
+	char dirname[20];
+} relaymap_ctx;
+
+static struct relaymap_bench *relaymap_setup_skeleton(void)
+{
+	struct relaymap_bench *skel;
+
+	setup_libbpf();
+
+	skel = relaymap_bench__open();
+	if (!skel) {
+		fprintf(stderr, "failed to open skeleton\n");
+		exit(1);
+	}
+
+	skel->rodata->batch_cnt = args.batch_cnt;
+
+	if (relaymap_bench__load(skel)) {
+		fprintf(stderr, "failed to load skeleton\n");
+		exit(1);
+	}
+
+	return skel;
+}
+
+static void relaymap_measure(struct bench_res *res)
+{
+	struct relaymap_ctx *ctx = &relaymap_ctx;
+
+	res->hits = atomic_swap(&buf_hits.value, 0);
+	res->drops = atomic_swap(&ctx->skel->bss->dropped, 0);
+}
+
+static void relaymap_setup(void)
+{
+	struct relaymap_ctx *ctx = &relaymap_ctx;
+	struct bpf_link *link;
+	int map_fd;
+
+	strcpy(ctx->dirname, "relaymap_bench");
+	ctx->skel = relaymap_setup_skeleton();
+
+	if (args.sample_rate > args.batch_cnt) {
+		fprintf(stderr, "sample rate %d is too high for given batch count %d\n",
+			args.sample_rate, args.batch_cnt);
+		exit(1);
+	}
+
+	map_fd = bpf_map__fd(ctx->skel->maps.relaymap);
+	if (bpf_map_update_elem(map_fd, NULL, ctx->dirname, 0)) {
+		fprintf(stderr, "failed to create relaymap directory\n");
+		exit(1);
+	}
+
+	link = bpf_program__attach(ctx->skel->progs.bench_relaymap);
+	if (!link) {
+		fprintf(stderr, "failed to attach program\n");
+		exit(1);
+	}
+}
+
+static int relaymap_read_samples(int ncpu, long *buf)
+{
+	struct relaymap_ctx *ctx = &relaymap_ctx;
+	char name[80];
+	FILE *fp;
+	int ret;
+
+	for (int i = 0; i < ncpu; ++i) {
+		sprintf(name, "/sys/kernel/debug/%s/relaymap%d",
+			ctx->dirname, i);
+		fp = fopen(name, "r");
+		if (!fp)
+			return -1;
+
+		ret = fread(buf, sizeof(long), args.batch_cnt, fp);
+		fclose(fp);
+
+		if (ret < 0)
+			return -1;
+		atomic_add(&buf_hits.value, ret);
+	}
+
+	return 0;
+}
+
+static void *relaymap_consumer(void *input)
+{
+	struct relaymap_ctx *ctx = &relaymap_ctx;
+	int cpu = libbpf_num_possible_cpus();
+	long *buf;
+
+	/* read a batch of data at a time */
+	buf = malloc(args.batch_cnt * sizeof(long));
+	if (!buf) {
+		fprintf(stderr, "failed to allocate buffer\n");
+		return NULL;
+	}
+
+	while (relaymap_read_samples(cpu, buf) == 0) {
+		if (args.back2back)
+			bufs_trigger_batch();
+	}
+	fprintf(stderr, "relaymap consumer failed!\n");
+	return NULL;
+}
+
 const struct bench bench_rb_libbpf = {
 	.name = "rb-libbpf",
 	.argp = &bench_ringbufs_argp,
@@ -564,3 +677,14 @@ const struct bench bench_pb_custom = {
 	.report_final = hits_drops_report_final,
 };
 
+const struct bench bench_relaymap = {
+	.name = "relaymap",
+	.argp = &bench_ringbufs_argp,
+	.validate = bufs_validate,
+	.setup = relaymap_setup,
+	.producer_thread = bufs_sample_producer,
+	.consumer_thread = relaymap_consumer,
+	.measure = relaymap_measure,
+	.report_progress = hits_drops_report_progress,
+	.report_final = hits_drops_report_final,
+};
