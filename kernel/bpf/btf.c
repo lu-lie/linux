@@ -6388,10 +6388,6 @@ static bool prog_args_trusted(const struct bpf_prog *prog)
 static bool prog_arg_maybe_null(const struct bpf_prog *prog, const struct btf *btf,
 				const struct btf_param *arg)
 {
-	if (prog->type != BPF_PROG_TYPE_TRACING ||
-	    prog->expected_attach_type != BPF_TRACE_RAW_TP)
-		return false;
-
 	return btf_param_match_suffix(btf, arg, "__nullable");
 }
 

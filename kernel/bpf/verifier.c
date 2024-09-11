@@ -29,6 +29,7 @@
 #include <linux/bpf_mem_alloc.h>
 #include <net/xdp.h>
 #include <linux/trace_events.h>
+#include <linux/kallsyms.h>
 
 #include "disasm.h"
 
@@ -21781,8 +21782,6 @@ static int check_non_sleepable_error_inject(u32 btf_id)
 	return btf_id_set_contains(&btf_non_sleepable_error_inject, btf_id);
 }
 
-#define BTF_MAX_NAME_SIZE 128
-
 int bpf_check_attach_target(struct bpf_verifier_log *log,
 			    const struct bpf_prog *prog,
 			    const struct bpf_prog *tgt_prog,
@@ -21791,16 +21790,15 @@ int bpf_check_attach_target(struct bpf_verifier_log *log,
 {
 	bool prog_extension = prog->type == BPF_PROG_TYPE_EXT;
 	bool prog_tracing = prog->type == BPF_PROG_TYPE_TRACING;
-	char trace_symbol[BTF_MAX_NAME_SIZE];
-	const struct bpf_raw_event_map *btp;
+	char trace_symbol[KSYM_SYMBOL_LEN];
 	const char prefix[] = "btf_trace_";
+	struct bpf_raw_event_map *btp;
 	int ret = 0, subprog = -1, i;
 	const struct btf_type *t;
 	bool conservative = true;
-	const char *tname;
+	const char *tname, *fname;
 	struct btf *btf;
 	long addr = 0;
-	char *fname;
 	struct module *mod = NULL;
 
 	if (!btf_id) {
@@ -21938,14 +21936,22 @@ int bpf_check_attach_target(struct bpf_verifier_log *log,
 		btp = bpf_get_raw_tracepoint(tname);
 		if (!btp)
 			return -EINVAL;
-		sprintf(trace_symbol, "%ps", btp->bpf_func);
-		fname = trace_symbol;
-		fname = strsep(&fname, " ");
+		fname = kallsyms_lookup((unsigned long)btp->bpf_func, NULL, NULL, NULL,
+					trace_symbol);
+		bpf_put_raw_tracepoint(btp);
 
-		ret = btf_find_by_name_kind(btf, fname, BTF_KIND_FUNC);
-		if (ret < 0) {
-			bpf_log(log, "Cannot find btf of template %s, fall back to %s%s.\n",
-				fname, prefix, tname);
+		if (!fname) {
+			printk(KERN_ERR "NotFound: fname=NULL bpffunc=%ps\n", btp->bpf_func);
+		} else {
+			printk(KERN_ERR "Found: fname=%s bpffunc=%ps\n", fname, btp->bpf_func);
+		}
+
+		if (fname)
+			ret = btf_find_by_name_kind(btf, fname, BTF_KIND_FUNC);
+
+		if (!fname || ret < 0) {
+			bpf_log(log, "Cannot find btf of tracepoint template, fall back to %s%s.\n",
+				prefix, tname);
 			t = btf_type_by_id(btf, t->type);
 			if (!btf_type_is_ptr(t))
 				/* should never happen in valid vmlinux build */
